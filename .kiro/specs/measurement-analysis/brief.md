@@ -14,7 +14,7 @@ CloudWatch Logsの`INIT_START`と`REPORT`から取得したい値は決まって
 
 ## Approach
 
-関数設定の測定用nonceを変更して新しいLambdaバージョンを発行し、そのバージョンの初回invokeをコールドスタート標本として採取する。
+関数設定の測定用nonceを変更して新しいLambdaバージョンを発行し、そのバージョンの初回invokeで`INIT_START`を確認できた場合だけコールドスタート標本として採取する。
 続けて同じバージョンをinvokeした値をウォームスタート標本とし、CloudWatch Logsとinvoke結果を突合する。
 
 ## Scope
@@ -32,6 +32,7 @@ CloudWatch Logsの`INIT_START`と`REPORT`から取得したい値は決まって
 
 - 待機時間だけに依存してコールドスタートを推定する方法
 - エラー標本を黙って除外する処理
+- 同期invokeで返る末尾4 KBのログだけを完全な記録として扱うこと
 - 事前に有利な結果だけを選ぶ処理
 
 ## Upstream / Downstream
@@ -48,3 +49,5 @@ CloudWatch Logsの`INIT_START`と`REPORT`から取得したい値は決まって
 
 シナリオの実行順を無作為化または交互化し、時間帯やランタイム更新の影響を一方の言語だけが受けにくくする。
 初回試行と記事用試行を分け、最終サンプル数を測定結果を見て恣意的に変更しない。
+CloudWatch Logsの反映遅延に備えて上限付きポーリングとページネーションを行う。
+関数エラーとsuppressed initの疑いがある標本は成功標本から分離し、runtime version ARNを記録する。

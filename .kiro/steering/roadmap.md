@@ -36,8 +36,12 @@ AWS Lambdaのコールドスタートを題材として、PythonとGoの実行�
 - AWSプロファイルは`kjr020_private`、リージョンは`ap-northeast-1`を候補とし、リソース作成前にアカウントIDを確認する。
 - 初回比較は`arm64`、512 MB、ZIP配布、VPCなし、Provisioned Concurrencyなし、SnapStartなし、Lambda直接invokeで条件をそろえる。
 - GoはOS-only runtimeの`provided.al2023`、Pythonは測定時点でAWS LambdaがサポートするPython 3.14を使用する。
+- Terraform AWS ProviderはPython 3.14を扱える6.21.0以上に固定する。
+- Goの成果物は`GOOS=linux GOARCH=arm64 CGO_ENABLED=0`でビルドし、ZIP直下へ実行可能な`bootstrap`を置く。Pythonのネイティブ依存もLinux arm64向けに構築する。
 - 生データは追記専用として扱い、加工済みデータとグラフは生データから再生成できるようにする。
-- 各測定にはGit commit、日時、リージョン、アーキテクチャ、メモリ、関数バージョン、ランタイム版、依存シナリオ、成果物サイズを記録する。
+- 各測定にはGit commit、日時、リージョン、アーキテクチャ、メモリ、関数バージョン、ランタイム版とruntime version ARN、依存シナリオ、成果物サイズを記録する。
+- コールドスタート標本は`INIT_START`を確認できたinvokeだけを採用し、関数エラーやsuppressed initの疑いがある標本は失敗理由とともに分離する。
+- CloudWatch Logsの反映遅延を前提にポーリングとページネーションを実装し、同期invokeの末尾4 KBログだけに依存しない。
 - AWS上の実験用リソースは測定終了後に削除できるようTerraformで管理する。
 - 記事では「Goが速い」と先に結論づけず、測定値の分布、制約、年代を明記した外部データから判断する。
 

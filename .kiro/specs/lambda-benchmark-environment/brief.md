@@ -46,5 +46,6 @@ TerraformでIAMロール、CloudWatch Logs、複数のLambdaシナリオを管�
 
 ## Constraints
 
-初回条件は`ap-northeast-1`、`arm64`、512 MB、VPCなしとする。
+初回条件は`ap-northeast-1`、`arm64`、512 MB、VPCなしとし、Terraform AWS Providerは6.21.0以上へ固定する。
+Goは`GOOS=linux GOARCH=arm64 CGO_ENABLED=0`でビルドし、ZIP直下の実行可能な`bootstrap`として配置する。Pythonのネイティブ依存もLinux arm64向けに構築する。
 AWSへの変更はTerraformで追跡し、`terraform destroy`で実験用リソースを削除できるようにする。
