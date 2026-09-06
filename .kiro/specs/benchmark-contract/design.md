@@ -38,6 +38,7 @@
 - `measurement-analysis`が所有するAWS呼び出し、CloudWatch待機と再試行、生データ書き込み、集計、可視化。
 - `technical-article`が所有する記事本文、図表の説明、公開判断。
 - AWS上の認証、権限設定、リソース削除。
+- GitHubのRulesetやbranch protectionによるrequired checkの強制設定。
 - Gitへの自動コミットや不合格データの自動修正。
 
 ### Allowed Dependencies
@@ -47,6 +48,7 @@
 - Python環境と依存版の固定には`uv`を使用してよい。
 - AWS SDK、Terraform、Lambdaランタイム、分析ライブラリへ依存してはならない。
 - 下流仕様は公開されたJSONファイル、JSON Linesファイル、CLIだけを参照し、Python内部モジュールへ直接依存しない。
+- 依存方向は共通型とスキーマ、登録表と公開安全検査、意味検証、CLI、CIの順とし、逆向きの参照を禁止する。
 
 ### Revalidation Triggers
 
@@ -78,7 +80,7 @@ flowchart LR
 
     Plan[ExperimentPlan<br/>後続処理が作成]
     Records[MeasurementRecord JSONL<br/>後続処理が追記]
-    Consumers[Terraform・計測・分析・記事]
+    Consumers[Terraform、計測、分析、記事]
 
     Schemas --> Registry
     Catalog --> Semantics
@@ -110,13 +112,18 @@ flowchart LR
 | Storage | JSON、UTF-8 JSON Lines | 定義、計画、測定記録、レポート | 測定記録は一行一試行とする |
 | Dependency management | `uv`、`uv.lock` | 再現可能なPython環境 | `contract/`内で完結する |
 | Test | `pytest`、`ruff`、`mypy` | 振る舞い、形式、型の検査 | 開発依存に限定する |
-| CI | GitHub Actions | 契約と公開データの合格確認 | 不合格時はマージを止める |
+| CI | GitHub Actions | 契約と公開データの合格確認 | 不合格をrequired check用のfailureとして報告する |
 
 ## File Structure Plan
 
 ### Directory Structure
 
 ```text
+README.md                              # リポジトリ全体と契約検証への入口
+.gitignore                             # Python環境とローカル検証出力の除外
+.github/
+└── workflows/
+    └── validate-contract.yml          # 契約検証のCI
 contract/
 ├── README.md                         # 契約の使い方とCLI例
 ├── pyproject.toml                    # パッケージ、CLI、検査設定
@@ -152,11 +159,14 @@ contract/
         └── test_cli.py
 ```
 
-### Modified Files
+### Repository Files
 
-- `.gitignore` — `contract/.venv/`とローカル検証出力を除外する。
-- `README.md` — 契約検証への入口と後続仕様との関係を案内する。
-- `.github/workflows/validate-contract.yml` — スキーマ、基準シナリオ、公開対象データを検証し、不合格の変更をマージ対象から外す。
+- `.gitignore`は`contract/.venv/`とローカル検証出力を除外する。
+- `README.md`は契約検証への入口と後続仕様との関係を案内する。
+- `.github/workflows/validate-contract.yml`はスキーマ、基準シナリオ、公開対象データを検証し、不合格をマージ不可の判定として報告する。
+
+後続仕様が作る公開対象の探索パスは`experiments/plans/*.json`、`data/raw/<experiment_id>/<plan_id>.jsonl`、`data/derived/<experiment_id>/manifest.json`に固定する。
+この仕様はパスと検証方法を定めるが、実験計画、生データ、派生物の内容と書き込み処理は所有しない。
 
 ## System Flows
 
@@ -273,6 +283,25 @@ JSON Linesでは一行の不合格で処理を止めず、読めるすべての�
 - `controlled_conditions`はグループ内で同じ値を持ち、`varied_factors`だけが意図的に異なる。
 - 初回対象外のVPC、Provisioned Concurrency、SnapStart、コンテナイメージ、x86_64を`out_of_scope_conditions`へ明示する。
 - 期待応答は本文ではなくHTTP相当の状態値とSHA-256で定義する。
+
+初回カタログは次の四つのシナリオを持つ。
+
+| Comparison group | Scenario ID | Runtime | Dependency profile |
+|---|---|---|---|
+| `minimal-arm64-512mb-v1` | `python314-minimal-arm64-v1` | `python3.14` | `minimal` |
+| `minimal-arm64-512mb-v1` | `go-minimal-arm64-v1` | `provided.al2023` | `minimal` |
+| `aws-sdk-arm64-512mb-v1` | `python314-aws-sdk-arm64-v1` | `python3.14` | `aws_sdk` |
+| `aws-sdk-arm64-512mb-v1` | `go-aws-sdk-arm64-v1` | `provided.al2023` | `aws_sdk` |
+
+`minimal`は各ランタイムの標準機能だけで応答する区分とする。
+`aws_sdk`は版を固定したAWS SDKを読み込むが、外部APIを呼ばずに同じ応答を返す区分とする。
+二つの比較グループをまたいだ直接比較は許可しない。
+
+両グループの固定条件はリージョン`ap-northeast-1`、アーキテクチャ`arm64`、メモリ512 MB、タイムアウト10秒、ZIP配布、VPCなし、Provisioned Concurrency 0、SnapStart無効とする。
+期待応答は`statusCode`が200、`body`がUTF-8の`ok`であり、`body_sha256`は`2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df`とする。
+観測指標は`init_duration_ms`、`function_duration_ms`、`billed_duration_ms`、`client_round_trip_ms`、`max_memory_used_mb`、`artifact_size_bytes`とする。
+起動根拠として保存できる情報源は`INIT_START`、`REPORT`、`CLOUDWATCH_LOG_STREAM`に限定する。
+初回の除外理由コードは`function-failure`、`response-mismatch`、`startup-unknown`、`condition-mismatch`、`log-timeout`、`suppressed-init-suspected`とする。
 
 **Dependencies**
 
@@ -412,6 +441,7 @@ class ContractValidator:
 - 認証情報を示す禁止キー名と、アクセスキー形式などの禁止値パターンを再帰検査する。
 - AWS ARNのアカウントID部分、12桁の`account_id`、実リソース名用の禁止キーを拒否する。
 - `resource_alias`は`resource-`と16桁の小文字16進数からなる無作為な別名だけを許可し、元の値との対応表は扱わない。
+- 公開安全検査は別名の書式だけを検証し、無作為な別名の生成は`measurement-analysis`の責任とする。
 - `response_body`、`request_payload`、`raw_log`などの生データ項目を拒否する。
 - AWS管理のランタイム版ARNは、アカウントID部分が空でありLambda Runtime ARN形式に合う場合だけ許可する。
 
@@ -470,16 +500,19 @@ benchmark-contract validate-derivation MANIFEST.json \
 
 | Field | Detail |
 |---|---|
-| Intent | 公開リポジトリへ契約違反データをマージしない |
+| Intent | 契約違反をrequired check用のfailureとして報告する |
 | Requirements | 1.3、6.1、7.4、8.4 |
 
 **Responsibilities & Constraints**
 
 - Pull Requestと`main`へのpushで`check-schemas`と現行契約文書の検証を実行する。
-- Pull Requestでは基準コミットのシナリオ集合と既存JSON Linesを一時ファイルへ取り出し、互換性と接頭辞保持を検査する。
+- 履歴を省略せずcheckoutし、Pull Requestではbase SHA、`main`へのpushではbefore SHAを基準コミットにする。
+- 基準コミットのシナリオ集合と既存JSON Linesを一時ファイルへ取り出し、互換性と接頭辞保持を検査する。
 - 新規JSON Linesには基準ファイルがないため、全行の契約検証だけを実行する。
+- 基準コミットに存在するJSON Linesが削除された場合は追記専用違反として扱う。
 - AWS認証情報を設定せず、ローカルファイル検証だけを行う。
 - 一つでも終了コードが非ゼロならジョブを失敗させる。
+- ジョブ名を`contract-validation`へ固定し、Rulesetからrequired checkとして指定できる状態にする。
 
 **Contracts**: Batch [x]
 
@@ -572,7 +605,7 @@ IDは英小文字から始まる英小文字、数字、ハイフンの文字列
 | Identity | `contract_revision`、`measurement_id`、`experiment_id`、`plan_id`、`scenario_id`、`comparison_group_id` | 参照文書と一致する |
 | Ordering | `trial_phase`、`sample_index`、`execution_order`、`measured_at` | 正の整数、UTC日時 |
 | ExecutionResult | `status`、`response_sha256` | `status`は`success`または`failure`、失敗時のダイジェストはnullを許可する |
-| StartupObservation | `classification`、`init_start_observed`、`environment_reuse_observed`、`evidence_event_types` | `cold`、`warm`、`unknown`、`failure`の規則と一致する |
+| StartupObservation | `classification`、`init_start_observed`、`environment_reuse_observed`、`environment_alias`、`evidence_sources` | `cold`、`warm`、`unknown`、`failure`の規則と一致する |
 | Timings | `init_duration_ms`、`function_duration_ms`、`billed_duration_ms`、`client_round_trip_ms` | 取得不能はnull、負値は禁止 |
 | Resources | `memory_size_mb`、`max_memory_used_mb` | 正の整数 |
 | RuntimeEnvironment | `region`、`architecture`、`runtime`、`runtime_version`、`runtime_version_arn`、`function_version`、`resource_alias` | 版を観測した場合はversionとARNを両方保存する |
@@ -589,8 +622,10 @@ IDは英小文字から始まる英小文字、数字、ハイフンの文字列
 | success | false | false | `unknown` |
 | success | true | true | `unknown` |
 
-`init_duration_ms`は`INIT_START`だけではなく`REPORT`またはTelemetry APIの初期化レポートで取得できた場合に保存する。
-`evidence_event_types`は許可したイベント種別名だけを保存し、生ログ本文を保存しない。
+`init_duration_ms`は`REPORT`のInit Durationから取得できた場合に保存する。
+`environment_alias`はCloudWatchのログストリーム名をSHA-256へ通した先頭16桁から作り、`environment-`を接頭辞にする。
+Lambdaの各実行環境は専用ログストリームへ書き続けるため、同じ実験で以前に観測した`environment_alias`と一致し、かつ`INIT_START`がない呼び出しを実行環境再利用の根拠とする。
+`evidence_sources`は許可した情報源の名前だけを保存し、生ログ本文とログストリーム名を保存しない。
 
 #### DerivationManifest
 
@@ -629,6 +664,7 @@ CLIは記載した測定IDが入力JSON Linesに存在し、集計件数とID集
 - `accepted`は成功かつ計画適合の標本だけに許可し、`unknown`と`failure`は記事の成功標本集計へ入れない。
 - `excluded`でも元の測定記録を削除せず、計画で定義した理由コードを一件以上残す。
 - 構造または意味検証に失敗した行は無効であり、`MeasurementDisposition`の値に関係なく集計へ渡さない。
+- 実行成否、起動区分、採否、契約検証の合否は別の状態として保持し、相互に上書きしない。
 
 ### Data Contracts & Integration
 
@@ -644,6 +680,7 @@ CLIは記載した測定IDが入力JSON Linesに存在し、集計件数とID集
 
 - 読める入力について、構文、改訂、構造、意味、公開安全の違反を可能な限り集約する。
 - 違反コードは機械判定用に安定させ、説明文は問題の条件と直し方を示す。
+- `jsonschema`の標準メッセージは入力値を含み得るため出力せず、検証キーワードごとの独自メッセージへ変換する。
 - 禁止情報を検出した場合、説明文やログへ元の値を複写しない。
 - 内部例外のトレースは通常実行で出さず、`--debug`指定時だけ標準エラーへ出す。
 
@@ -701,7 +738,8 @@ CIは終了コードと`ValidationReport.valid`を確認し、失敗時にレポ
 
 ## Performance & Scalability
 
-- 測定JSON Linesは一行ずつ処理し、メモリ使用量を標本数から独立させる。
+- 測定JSON Linesの文書本体は一行ずつ処理し、入力全体の二重保持を避ける。
+- 重複検出用の測定ID集合と全件レポートは標本数に比例して増えるため、メモリ計算量はO(n)とする。
 - スキーマと参照文書は一回のCLI実行で一度だけ読み込む。
 - 違反件数に上限を設けず全件報告するが、禁止値そのものは保持しない。
 

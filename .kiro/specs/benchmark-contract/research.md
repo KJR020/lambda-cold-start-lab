@@ -62,10 +62,11 @@
   - Lambdaは新しい実行環境を作るとき、CloudWatch Logsへ`INIT_START`を出力する。
   - `INIT_START`にはランタイム版とランタイム版ARNが記録される。
   - 同じ実行環境を再利用する呼び出しでは`INIT_START`は出ない。
+  - Lambdaの各実行環境には専用のCloudWatchログストリームがあり、その実行環境は存続中に同じログストリームへ書き続ける。
   - 実行失敗後の次回呼び出しでは、レポート上のDurationへ再初期化時間が含まれる場合があり、単純なDuration差分だけではコールドスタートと断定できない。
 - **Implications**:
   - `INIT_START`をコールドスタートの直接根拠として記録する。
-  - 実行環境再利用の識別子と`INIT_START`不在が両方そろう場合だけウォームスタートとする。
+  - ログストリーム名を公開用の一方向別名へ変換し、同じ別名の再観測と`INIT_START`不在が両方そろう場合だけウォームスタートとする。
   - 根拠が欠ける場合と矛盾する場合は`unknown`とし、推測で補正しない。
   - ランタイム版とARNを取得できた場合は両方を保存する。
 
@@ -82,6 +83,21 @@
   - 応答は本文ではなくSHA-256ダイジェストで同一性を確認する。
   - 関数名、ロググループ名、アカウントIDは保存せず、契約内の別名へ変換する。
   - 禁止キー名とAWS ARNのアカウントID部分を公開前の意味検証で検査する。
+
+### タスク生成前の実装可能性確認
+
+- **Context**: 設計承認後に実装タスクへ分解したところ、初回カタログの値、CIの探索範囲、メモリ使用量の説明に実装者の判断が残っていた。
+- **Sources Consulted**: `requirements.md`、`design.md`、`.kiro/steering/roadmap.md`
+- **Findings**:
+  - 四つのシナリオ名、タイムアウト、期待応答、観測指標、除外理由コードを固定しないと、基準カタログの完了条件が決まらない。
+  - CIが後続仕様のファイルを検証するには、実験計画、生データ、派生物マニフェストの探索パスが必要である。
+  - 全測定IDの重複検出と全件レポートを行う限り、補助情報のメモリ使用量は標本数に比例する。
+  - `jsonschema`の標準エラー文は入力値を含み得るため、そのまま公開レポートへ出せない。
+- **Implications**:
+  - 初回カタログの二つの比較グループと四つのシナリオを設計へ固定する。
+  - 後続仕様が作る公開対象のパスを統合契約として定める。
+  - JSON Lines本文は逐次処理し、重複検出集合と全件レポートはO(n)と明記する。
+  - 検証キーワードを安全な独自メッセージへ変換し、入力値をレポートへ複写しない。
 
 ## Architecture Pattern Evaluation
 
@@ -101,7 +117,7 @@
   1. JSON Schema Draft 2020-12を直接管理する。
   2. PydanticモデルからJSON Schemaを生成する。
   3. Pythonの独自検証コードだけを提供する。
-- **Selected Approach**: `scenario-set`、`experiment-plan`、`measurement-record`、`validation-report`をDraft 2020-12で定義する。
+- **Selected Approach**: `scenario-set`、`experiment-plan`、`measurement-record`、`derivation-manifest`、`validation-report`をDraft 2020-12で定義する。
 - **Rationale**: 言語に依存せず、スキーマの差分がそのまま契約変更としてレビューできる。
 - **Trade-offs**: 複数文書をまたぐ整合性はPythonの意味検証へ分ける必要がある。
 - **Follow-up**: 実装時にすべてのスキーマを`check_schema`へ通す。
@@ -161,14 +177,18 @@
 - スキーマの`$ref`解決がネットワークへ依存する危険があるため、全スキーマをローカル登録表へ事前登録する。
 - 生ログを保存しないことで調査材料が減るため、測定記録へ判定根拠と抽出元のイベント種別を明示する。
 - JSON Linesは追記に向くが、形式だけでは既存行の変更を検出できないため、基準ファイルが現行ファイルの完全な接頭辞であることをCLIで検査する。
+- 全件違反と重複IDを保持する補助情報はO(n)になるため、文書本文だけを逐次処理し、実測データ量に対するメモリ使用量を統合テストで確認する。
+- `jsonschema`の標準エラーへ機密値が混入する危険があるため、入力値を含まない独自メッセージへ変換する。
+- 別名の形式だけでは無作為性を証明できないため、生成責任を後続の測定仕様へ置き、この仕様では形式と禁止値だけを検査する。
 
 ## References
 
-- [JSON Schema Core Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core) — スキーマ識別、参照、JSONデータモデルの正本。
-- [JSON Schema Validation Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-validation) — 構造検証キーワードの正本。
-- [`jsonschema` Schema Validation](https://python-jsonschema.readthedocs.io/en/stable/validate/) — Python検証APIと`format`検査の仕様。
-- [uvのプロジェクト構造](https://docs.astral.sh/uv/concepts/projects/layout/) — `pyproject.toml`、プロジェクト環境、ロックファイルの管理方法。
-- [JSON Lines](https://jsonlines.org/) — 行単位のJSON記録形式。
-- [AWS Lambdaのランタイム版の識別](https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-identify.html) — `INIT_START`とランタイム版情報。
-- [AWS Lambda実行環境](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html) — 初期化、再利用、抑制された初期化の挙動。
-- [AWS IAMのベストプラクティス](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html) — 長期認証情報を含む公開禁止情報の背景。
+- [JSON Schema Core Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core)：スキーマ識別、参照、JSONデータモデルの正本。
+- [JSON Schema Validation Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-validation)：構造検証キーワードの正本。
+- [`jsonschema` Schema Validation](https://python-jsonschema.readthedocs.io/en/stable/validate/)：Python検証APIと`format`検査の仕様。
+- [uvのプロジェクト構造](https://docs.astral.sh/uv/concepts/projects/layout/)：`pyproject.toml`、プロジェクト環境、ロックファイルの管理方法。
+- [JSON Lines](https://jsonlines.org/)：行単位のJSON記録形式。
+- [AWS Lambdaのランタイム版の識別](https://docs.aws.amazon.com/lambda/latest/dg/runtime-management-identify.html)：`INIT_START`とランタイム版情報。
+- [AWS Lambda実行環境](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html)：初期化、再利用、抑制された初期化の挙動。
+- [AWS Lambda関数のCloudWatchログ表示](https://docs.aws.amazon.com/lambda/latest/dg/monitoring-cloudwatchlogs-view.html)：実行環境と専用ログストリームの対応。
+- [AWS IAMのベストプラクティス](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)：長期認証情報を含む公開禁止情報の背景。
